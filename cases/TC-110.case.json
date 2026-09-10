@@ -5,7 +5,7 @@
   "tags": [
     "未分类"
   ],
-  "updatedAt": "2026-09-10T02:50:40.943Z",
+  "updatedAt": "2026-09-10T02:52:21.399Z",
   "steps": [
     {
       "id": "s111",
@@ -24,6 +24,32 @@
       "id": "s112",
       "title": "点击控件",
       "kind": "click",
+      "stage": "新增步骤",
+      "targetName": "账号登录按钮 A",
+      "selector": "app:id/login_account",
+      "locator": "resource_id",
+      "timeout": 10,
+      "seconds": 1,
+      "value": "{{value}}",
+      "expected": "预期文字"
+    },
+    {
+      "id": "s113",
+      "title": "输入文字",
+      "kind": "input",
+      "stage": "新增步骤",
+      "targetName": "账号登录按钮 A",
+      "selector": "app:id/login_account",
+      "locator": "resource_id",
+      "timeout": 10,
+      "seconds": 1,
+      "value": "{{value}}",
+      "expected": "预期文字"
+    },
+    {
+      "id": "s114",
+      "title": "输入文字",
+      "kind": "input",
       "stage": "新增步骤",
       "targetName": "账号登录按钮 A",
       "selector": "app:id/login_account",
