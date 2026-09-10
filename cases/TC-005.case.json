@@ -1,0 +1,50 @@
+{
+  "schemaVersion": 1,
+  "id": "TC-005",
+  "name": "退出登录",
+  "tags": [
+    "账号"
+  ],
+  "updatedAt": "2026-09-10T03:06:12.116Z",
+  "steps": [
+    {
+      "id": "s109",
+      "title": "点击退出登录",
+      "kind": "click",
+      "stage": "退出账号",
+      "targetName": "退出登录",
+      "selector": "app:id/logout",
+      "locator": "resource_id",
+      "timeout": 10,
+      "seconds": 1,
+      "value": "",
+      "expected": ""
+    },
+    {
+      "id": "s115",
+      "title": "等待时长",
+      "kind": "wait",
+      "stage": "退出账号",
+      "targetName": "账号登录按钮 A",
+      "selector": "app:id/login_account",
+      "locator": "resource_id",
+      "timeout": 10,
+      "seconds": 1,
+      "value": "{{value}}",
+      "expected": "预期文字"
+    },
+    {
+      "id": "s116",
+      "title": "点击控件",
+      "kind": "click",
+      "stage": "退出账号",
+      "targetName": "账号登录按钮 A",
+      "selector": "app:id/login_account",
+      "locator": "resource_id",
+      "timeout": 10,
+      "seconds": 1,
+      "value": "{{value}}",
+      "expected": "预期文字"
+    }
+  ]
+}
