@@ -5,6 +5,8 @@ import os
 import re
 import subprocess
 import time
+import urllib.error
+import urllib.request
 import xml.etree.ElementTree as ET
 
 
@@ -25,19 +27,30 @@ def connected_devices():
     return devices
 
 
-def resolve_serial(serial=None):
+def resolve_serial(serial=None, required=True):
     serial = serial or os.environ.get("MIIX_SERIAL")
     if serial:
         return serial
-    devices = connected_devices()
+    try:
+        devices = connected_devices()
+    except Exception:
+        if not required:
+            return ""
+        raise
     if len(devices) == 1:
         return devices[0]
     if not devices:
+        if not required:
+            return ""
         raise ValueError("没有发现在线 Android 设备。请先执行 adb devices，或在 PyCharm 运行配置里设置 MIIX_SERIAL。")
+    if not required:
+        return ""
     raise ValueError("发现多台 Android 设备，请在 PyCharm 运行配置里设置环境变量 MIIX_SERIAL，或添加参数 --serial <设备ID>。在线设备：" + ", ".join(devices))
 
 
 def _adb(serial, *args, timeout=20):
+    if not serial:
+        raise ValueError("未选择 Android 设备。请连接手机，或在 PyCharm 运行配置里设置 MIIX_SERIAL / --serial。")
     result = subprocess.run([adb_path(), "-s", serial, *map(str, args)], capture_output=True, timeout=timeout)
     if result.returncode:
         message = result.stderr.decode("utf-8", "replace").strip()
@@ -46,6 +59,8 @@ def _adb(serial, *args, timeout=20):
 
 
 def _adb_bytes(serial, *args, timeout=20):
+    if not serial:
+        raise ValueError("未选择 Android 设备。请连接手机，或在 PyCharm 运行配置里设置 MIIX_SERIAL / --serial。")
     result = subprocess.run([adb_path(), "-s", serial, *map(str, args)], capture_output=True, timeout=timeout)
     if result.returncode:
         message = result.stderr.decode("utf-8", "replace").strip()
@@ -119,24 +134,34 @@ class Element:
             _adb(self.device.serial, "shell", "input", "text", value.replace(" ", "%s"), timeout=timeout)
         return self.device._step(action)
 
+    def _check_once(self, type="exists", expected=None):
+        try:
+            node = self._node()
+            exists = True
+        except LookupError:
+            node, exists = None, False
+        actual = exists
+        if type == "exists":
+            return exists, exists
+        if type == "not_exists":
+            return (not exists), exists
+        if not exists:
+            return False, "未找到控件"
+        if type in ("text_equals", "text_contains"):
+            actual = node.get("text", "")
+            return (actual == expected if type == "text_equals" else str(expected) in actual), actual
+        if type in ("visible", "enabled", "clickable", "checked", "selected", "disabled"):
+            attr = "enabled" if type == "disabled" else "visible-to-user" if type == "visible" else type
+            actual = node.get(attr) == "true"
+            wanted = False if type == "disabled" and expected is None else str(expected if expected is not None else True).lower() == "true"
+            return actual == wanted, actual
+        raise ValueError("不支持的检查类型：%s" % type)
+
     def check(self, type="exists", expected=None, timeout=10, stable_for=0, failure="stop"):
         def action():
             deadline = time.monotonic() + timeout
             while True:
-                try:
-                    node = self._node()
-                    exists = True
-                except LookupError:
-                    node, exists = None, False
-                actual = exists
-                passed = exists if type in ("exists", "visible") else not exists if type == "not_exists" else False
-                if exists and type in ("text_equals", "text_contains"):
-                    actual = node.get("text", "")
-                    passed = actual == expected if type == "text_equals" else str(expected) in actual
-                elif exists and type in ("enabled", "disabled", "clickable", "checked", "selected"):
-                    attr = "enabled" if type == "disabled" else type
-                    actual = node.get(attr) == "true"
-                    passed = (not actual) if type == "disabled" else actual
+                passed, actual = self._check_once(type, expected)
                 if passed:
                     if stable_for:
                         time.sleep(stable_for / 1000)
@@ -146,12 +171,23 @@ class Element:
                 time.sleep(.25)
         return self.device._step(action, continue_on_error=failure == "continue")
 
+    def wait_until(self, type="visible", expected="true", timeout=10, interval=0.5):
+        def action():
+            deadline = time.monotonic() + float(timeout)
+            last = None
+            while True:
+                passed, last = self._check_once(type, expected)
+                if passed:
+                    return last
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("异步等待超时：%s 期望 %r，实际 %r" % (type, expected, last))
+                time.sleep(float(interval))
+        return self.device._step(action)
+
 
 class Device:
     def __init__(self, serial):
-        if not serial:
-            raise ValueError("未选择 Android 设备")
-        self.serial, self.results = resolve_serial(serial), []
+        self.serial, self.results = resolve_serial(serial, required=False), []
 
     def __call__(self, **selector):
         return Element(self, selector)
@@ -196,6 +232,41 @@ class Device:
         if not package or not re.match(r"^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+$", str(package)):
             raise ValueError("应用包名格式不正确")
         return self._step(lambda: _adb(self.serial, "shell", "monkey", "-p", package, "-c", "android.intent.category.LAUNCHER", "1", timeout=30))
+
+
+    def api(self, method="GET", url="", headers="{}", body="", expect_status=200, json_path="", expected="", timeout=10):
+        def pick(data, path):
+            value = data
+            for part in str(path).split('.'):
+                if not part:
+                    continue
+                if isinstance(value, list) and part.isdigit():
+                    value = value[int(part)]
+                elif isinstance(value, dict):
+                    value = value.get(part)
+                else:
+                    return None
+            return value
+        def action():
+            hdrs = json.loads(headers or "{}") if isinstance(headers, str) else dict(headers or {})
+            payload = None if body in (None, "") else str(body).encode("utf-8")
+            request = urllib.request.Request(url, data=payload, headers=hdrs, method=str(method).upper())
+            try:
+                with urllib.request.urlopen(request, timeout=float(timeout)) as response:
+                    status = response.getcode()
+                    raw = response.read().decode("utf-8", "replace")
+            except urllib.error.HTTPError as error:
+                status = error.code
+                raw = error.read().decode("utf-8", "replace")
+            if int(status) != int(expect_status):
+                raise AssertionError("接口状态码不匹配：预期 %s，实际 %s，响应 %s" % (expect_status, status, raw[:500]))
+            actual = raw
+            if json_path:
+                actual = pick(json.loads(raw), json_path)
+                if str(actual) != str(expected):
+                    raise AssertionError("接口字段不匹配：%s 预期 %r，实际 %r" % (json_path, expected, actual))
+            return {"status": status, "actual": actual}
+        return self._step(action)
 
     def screenshot(self):
         def action():

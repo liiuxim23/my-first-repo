@@ -1,6 +1,9 @@
 # MiiX 工作流原型 · 动作代码示例
 def test_case(device, params):
 
+    # [s125] 点击控件
+    device(resource_id="app:id/login_account").click(timeout=10)
+
     # [s118] 点击免费电子书
     device(description="免费电子书").click(timeout=10)
 
@@ -12,6 +15,9 @@ def test_case(device, params):
 
     # [s122] 点击bookshelf_button
     device(description="bookshelf_button").click(timeout=10)
+
+    # [s124] 截图留证
+    device.screenshot()
 
 if __name__ == "__main__":
     import argparse
