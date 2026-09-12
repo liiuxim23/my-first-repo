@@ -205,18 +205,25 @@ class Device:
             raise RuntimeError("设备未返回有效控件树")
         return ET.fromstring(text[start:end + len("</hierarchy>")])
 
-    def _step(self, action, continue_on_error=False):
+    def _step(self, action, continue_on_error=False, metadata=None):
         line = inspect.currentframe().f_back.f_back.f_lineno
         result = {"index": len(self.results) + 1, "line": line, "status": "running"}
+        if metadata:
+            result.update(metadata)
         started = time.monotonic()
         try:
-            result["actual"] = action()
-            result["status"] = "passed"
+            actual = action()
+            if isinstance(actual, dict) and actual.get("_miix_status"):
+                result.update({k: v for k, v in actual.items() if k != "_miix_status"})
+                result["status"] = actual["_miix_status"]
+            else:
+                result["actual"] = actual
+                result["status"] = "passed"
         except Exception as error:
             result.update(status="failed", error=str(error))
         result["durationMs"] = round((time.monotonic() - started) * 1000)
         self.results.append(result)
-        if result["status"] != "passed" and not continue_on_error:
+        if result["status"] not in ("passed", "skipped") and not continue_on_error:
             raise RuntimeError(result["error"])
         return result.get("actual")
 
@@ -285,6 +292,85 @@ class Device:
                     raise AssertionError("接口字段不匹配：%s 预期 %r，实际 %r" % (json_path, expected, actual))
             return {"status": status, "actual": actual}
         return self._step(action)
+
+    def execute_action(self, action_name, desc="", app_type="ANDROID", is_must_execute=True, is_must_pass=True, args=None):
+        """Run a structured action and keep OneStep-style report fields.
+
+        This compatibility entry lets generated cases use a stable action schema such as:
+        driver.execute_action(action_name='WaitTimeout', desc='延时等待', args={'Arg': {'Duration': 3}})
+        Unsupported PC/Web actions are recorded as skipped when is_must_execute=False.
+        """
+        args = dict(args or {})
+        arg = args.get("Arg") or args.get("arg") or args
+        name = str(action_name or "").strip()
+        timeout = float(args.get("Timeout") or args.get("timeout") or 60)
+        metadata = {
+            "action_name": name,
+            "desc": str(desc or ""),
+            "app_type": str(app_type or ""),
+            "is_must_execute": bool(is_must_execute),
+            "is_must_pass": bool(is_must_pass),
+            "args": args,
+            "title": str(desc or name or "未命名动作"),
+        }
+
+        def selector_from_arg():
+            selector = arg.get("Selector") or arg.get("selector") or ""
+            ele_id = arg.get("EleId") or arg.get("ResourceId") or arg.get("resource_id") or ""
+            text = arg.get("Text") or arg.get("text") or ""
+            desc_value = arg.get("ContentDesc") or arg.get("Description") or arg.get("content_desc") or ""
+            if selector:
+                return {"xpath": selector}
+            if ele_id:
+                return {"resource_id": str(ele_id)}
+            if text:
+                return {"text": str(text)}
+            if desc_value:
+                return {"description": str(desc_value)}
+            raise ValueError("动作缺少可执行的控件定位")
+
+        def unsupported():
+            if is_must_execute:
+                raise NotImplementedError("当前 MiiX 运行器暂不支持动作：" + name)
+            return {"_miix_status": "skipped", "actual": "未执行：当前运行器暂不支持 " + name}
+
+        def run():
+            normalized = name.lower()
+            if normalized in {"waittimeout", "wait", "sleep"}:
+                duration = float(arg.get("Duration") or arg.get("Seconds") or arg.get("seconds") or 1)
+                time.sleep(duration)
+                return duration
+            if normalized in {"clickelement", "click", "tap"}:
+                target = self(**selector_from_arg())
+                count = int(arg.get("ClickCount") or 1)
+                if count >= 2:
+                    return target.double_click(timeout=timeout)
+                return target.click(timeout=timeout)
+            if normalized in {"inputtext", "settext", "type"}:
+                return self(**selector_from_arg()).input(str(arg.get("Text") or arg.get("Value") or ""), timeout=timeout)
+            if normalized in {"cleartext", "clearinput"}:
+                return self(**selector_from_arg()).clear(timeout=timeout)
+            if normalized in {"swipe", "swipeelement"}:
+                return _adb(self.serial, "shell", "input", "swipe", arg.get("X", 0), arg.get("Y", 0), arg.get("ToX", 0), arg.get("ToY", 0), arg.get("Duration", 300), timeout=timeout)
+            if normalized in {"keyevent", "presskey"}:
+                return self.key(int(arg.get("KeyCode") or arg.get("Code") or 4))
+            if normalized in {"launchapp", "startapp"}:
+                return self.launch(str(arg.get("Package") or arg.get("PackageName") or ""))
+            if normalized in {"stopapp", "quitapp"}:
+                return self.stop_app(str(arg.get("Package") or arg.get("PackageName") or ""))
+            if normalized in {"adb", "adbcommand", "runadb"}:
+                return self.adb(str(arg.get("Command") or arg.get("command") or ""))
+            if normalized in {"screenshot", "takescreenshot"}:
+                return self.screenshot(name=str(arg.get("Name") or arg.get("FileName") or "screenshot.png"), folder=str(arg.get("Folder") or "screenshots"))
+            if normalized in {"apirequest", "httprequest", "request"}:
+                return self.api(method=arg.get("Method", "GET"), url=arg.get("Url", ""), headers=arg.get("Headers", "{}"), body=arg.get("Body", ""), expect_status=arg.get("StatusCode", 200), json_path=arg.get("JsonPath", ""), expected=arg.get("Expected", ""), timeout=timeout)
+            if normalized in {"assert", "checkelement", "expectelement"}:
+                return self(**selector_from_arg()).check(type=arg.get("Type", "exists"), expected=arg.get("Expected"), timeout=timeout, failure="stop" if is_must_pass else "continue")
+            if normalized in {"quitbrowser", "launchbrowser", "createwodoc", "deletewodoc", "addcookies", "wogoto", "newframe"}:
+                return unsupported()
+            return unsupported()
+
+        return self._step(run, continue_on_error=not is_must_pass, metadata=metadata)
 
     def screenshot(self, name="screenshot.png", folder="screenshots"):
         def action():

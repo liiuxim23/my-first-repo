@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 1,
+  "id": "TC-126",
+  "name": "打卡",
+  "tags": [
+    "未分类"
+  ],
+  "draft": true,
+  "updatedAt": "2026-09-12T10:07:55.758Z",
+  "stages": [
+    "新增步骤"
+  ],
+  "steps": [
+    {
+      "id": "s127",
+      "title": "点击控件",
+      "kind": "click",
+      "stage": "新增步骤",
+      "targetName": "自定义控件",
+      "selector": "1",
+      "locator": "resource_id",
+      "timeout": 60,
+      "seconds": 0,
+      "value": "",
+      "expected": "",
+      "assertType": "text_equals",
+      "stableFor": 0,
+      "failurePolicy": "stop",
+      "x": 0,
+      "y": 0,
+      "toX": 0,
+      "toY": 0,
+      "duration": 0,
+      "key": 4,
+      "packageName": "",
+      "command": "",
+      "screenshotFolder": "screenshots",
+      "screenshotName": "screenshot.png",
+      "method": "GET",
+      "url": "",
+      "headers": "{}",
+      "body": "",
+      "statusCode": 200,
+      "jsonPath": "",
+      "apiExpected": "",
+      "stateExpected": true,
+      "interval": 0.5,
+      "needsLocatorReview": false,
+      "locatorVerified": true
+    }
+  ]
+}
