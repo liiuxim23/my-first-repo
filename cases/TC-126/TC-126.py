@@ -4,6 +4,9 @@ def test_case(device, params):
     # [s127] 点击控件
     device(resource_id="1").click(timeout=60)
 
+    # [s151] 双击控件
+    device(resource_id="111").double_click(timeout=60)
+
 if __name__ == "__main__":
     import argparse
     import json
