@@ -3,6 +3,7 @@ import inspect
 import json
 import os
 import re
+import shlex
 import subprocess
 import time
 import urllib.error
@@ -72,27 +73,31 @@ class Element:
     def __init__(self, device, selector):
         self.device, self.selector = device, selector
 
-    def _node(self):
-        tree = self.device._tree()
+    def _node(self, timeout=0):
+        deadline = time.time() + max(0, float(timeout or 0))
         aliases = {"resource_id": "resource-id", "description": "content-desc", "text": "text"}
         if "parent_child" in self.selector:
             raise RuntimeError("父子定位暂不能在 Python 执行器中解析，请重新抓取为 Resource ID 或 XPath")
-        matches = []
-        for node in tree.iter("node"):
-            if all(node.get(aliases.get(key, key)) == str(value) for key, value in self.selector.items() if key != "xpath"):
-                matches.append(node)
-        if "xpath" in self.selector:
-            value = self.selector["xpath"]
-            match = re.search(r"@(?:resource-id|text|content-desc)=(?:\"([^\"]*)\"|'([^']*)')", value)
-            if match:
-                needle = match.group(1) or match.group(2) or ""
-                attr = "resource-id" if "resource-id" in value else "content-desc" if "content-desc" in value else "text"
-                matches = [node for node in tree.iter("node") if node.get(attr) == needle]
-        if not matches:
-            raise LookupError("未找到控件：" + json.dumps(self.selector, ensure_ascii=False))
-        if len(matches) > 1:
-            raise LookupError("控件定位不唯一：匹配到 %d 个控件" % len(matches))
-        return matches[0]
+        while True:
+            tree = self.device._tree()
+            matches = []
+            for node in tree.iter("node"):
+                if all(node.get(aliases.get(key, key)) == str(value) for key, value in self.selector.items() if key != "xpath"):
+                    matches.append(node)
+            if "xpath" in self.selector:
+                value = self.selector["xpath"]
+                match = re.search(r"@(?:resource-id|text|content-desc)=(?:\"([^\"]*)\"|'([^']*)')", value)
+                if match:
+                    needle = match.group(1) or match.group(2) or ""
+                    attr = "resource-id" if "resource-id" in value else "content-desc" if "content-desc" in value else "text"
+                    matches = [node for node in tree.iter("node") if node.get(attr) == needle]
+            if len(matches) > 1:
+                raise LookupError("控件定位不唯一：匹配到 %d 个控件" % len(matches))
+            if matches:
+                return matches[0]
+            if time.time() >= deadline:
+                raise LookupError("未找到控件：" + json.dumps(self.selector, ensure_ascii=False))
+            time.sleep(0.25)
 
     @staticmethod
     def _center(node):
@@ -102,11 +107,11 @@ class Element:
         return (values[0] + values[2]) // 2, (values[1] + values[3]) // 2
 
     def click(self, timeout=10):
-        return self.device._step(lambda: _adb(self.device.serial, "shell", "input", "tap", *self._center(self._node()), timeout=timeout))
+        return self.device._step(lambda: _adb(self.device.serial, "shell", "input", "tap", *self._center(self._node(timeout)), timeout=timeout))
 
     def double_click(self, timeout=10):
         def action():
-            x, y = self._center(self._node())
+            x, y = self._center(self._node(timeout))
             _adb(self.device.serial, "shell", "input", "tap", x, y, timeout=timeout)
             time.sleep(0.12)
             _adb(self.device.serial, "shell", "input", "tap", x, y, timeout=timeout)
@@ -114,13 +119,13 @@ class Element:
 
     def long_press(self, timeout=10, duration=800):
         def action():
-            x, y = self._center(self._node())
+            x, y = self._center(self._node(timeout))
             _adb(self.device.serial, "shell", "input", "swipe", x, y, x, y, duration, timeout=timeout)
         return self.device._step(action)
 
     def clear(self, timeout=10):
         def action():
-            _adb(self.device.serial, "shell", "input", "tap", *self._center(self._node()), timeout=timeout)
+            _adb(self.device.serial, "shell", "input", "tap", *self._center(self._node(timeout)), timeout=timeout)
             _adb(self.device.serial, "shell", "input", "keyevent", "KEYCODE_MOVE_END", timeout=timeout)
             for _ in range(80):
                 _adb(self.device.serial, "shell", "input", "keyevent", "KEYCODE_DEL", timeout=timeout)
@@ -128,7 +133,7 @@ class Element:
 
     def input(self, value, timeout=10):
         def action():
-            _adb(self.device.serial, "shell", "input", "tap", *self._center(self._node()), timeout=timeout)
+            _adb(self.device.serial, "shell", "input", "tap", *self._center(self._node(timeout)), timeout=timeout)
             if not isinstance(value, str) or re.search(r"[^\x20-\x7e]", value):
                 raise ValueError("当前 Python ADB 输入支持英文；中文输入需手机 Agent")
             _adb(self.device.serial, "shell", "input", "text", value.replace(" ", "%s"), timeout=timeout)
@@ -233,6 +238,19 @@ class Device:
             raise ValueError("应用包名格式不正确")
         return self._step(lambda: _adb(self.serial, "shell", "monkey", "-p", package, "-c", "android.intent.category.LAUNCHER", "1", timeout=30))
 
+    def stop_app(self, package):
+        if not package or not re.match(r"^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+$", str(package)):
+            raise ValueError("应用包名格式不正确")
+        return self._step(lambda: _adb(self.serial, "shell", "am", "force-stop", package))
+
+    def adb(self, command):
+        args = shlex.split(str(command or ""))
+        if not args or len(args) > 100 or any(len(arg) > 1000 or "\0" in arg for arg in args):
+            raise ValueError("ADB 子命令无效")
+        if args[0] in {"adb", "-s", "--serial"}:
+            raise ValueError("只需填写 ADB 子命令，不要包含 adb -s")
+        return self._step(lambda: _adb(self.serial, *args, timeout=60))
+
 
     def api(self, method="GET", url="", headers="{}", body="", expect_status=200, json_path="", expected="", timeout=10):
         def pick(data, path):
@@ -268,14 +286,20 @@ class Device:
             return {"status": status, "actual": actual}
         return self._step(action)
 
-    def screenshot(self):
+    def screenshot(self, name="screenshot.png", folder="screenshots"):
         def action():
             report_dir = os.environ.get("MIIX_REPORT_DIR")
             data = _adb_bytes(self.serial, "exec-out", "screencap", "-p", timeout=20)
             if report_dir:
-                os.makedirs(report_dir, exist_ok=True)
-                name = "manual-screenshot-%03d.png" % (len([x for x in os.listdir(report_dir) if x.startswith("manual-screenshot-")]) + 1)
-                path = os.path.join(report_dir, name)
+                safe_name = os.path.basename(str(name or "screenshot.png"))
+                if not safe_name.lower().endswith(".png"):
+                    safe_name += ".png"
+                safe_folder = str(folder or "screenshots").replace("\\", "/").strip("/")
+                if not safe_folder or ".." in safe_folder.split("/"):
+                    raise ValueError("截图目录必须是用例目录内的相对路径")
+                target_dir = os.path.join(os.path.dirname(report_dir), safe_folder)
+                os.makedirs(target_dir, exist_ok=True)
+                path = os.path.join(target_dir, safe_name)
                 with open(path, "wb") as handle:
                     handle.write(data)
                 return path
